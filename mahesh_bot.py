@@ -25,7 +25,7 @@ import logging
 import csv
 import io
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from collections import defaultdict
 
 import pytz
@@ -514,8 +514,7 @@ async def main():
     # Message handler
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Daily summary job — every day at 9 PM IST (15:30 UTC)
+    # Daily summary job — every day at 9 PM IST
     bot_app.job_queue.run_daily(
         send_daily_summary,
-        time=datetime.strptime("21:00", "%H:%M")
-      
+        time=dt_time(21, 0, tzinfo=pytz.timezone("
