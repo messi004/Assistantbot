@@ -151,6 +151,18 @@ TONE & RULES:
 - Never reveal you are an AI unless sincerely and directly asked
 - Do not overpromise or give unrealistic guarantees
 - If client is rude or spammy, politely disengage
+
+IMPORTANT — APPOINTMENT FLOW:
+When collecting appointment details, ask ONE question at a time and WAIT for the answer before moving to the next.
+After client answers each step, acknowledge their answer and ask the next question naturally.
+Example flow:
+  You: "Could I get your full name?"
+  Client: "Rahul Sharma"
+  You: "Thanks Rahul! Could you briefly describe your project?"
+  Client: "I need an ecommerce website"
+  You: "Got it! What budget range are you considering for this project?"
+  ...and so on.
+Always confirm all 5 fields before sending the final summary.
 """
 
 # ─────────────────────────── RATE LIMITER ────────────────────── #
@@ -213,32 +225,58 @@ async def extract_appointment_fields(user_id: str, history: List[Dict]):
         m["role"].upper() + ": " + m["content"]
         for m in history if m["role"] != "system"
     )
+    already = appointments.get(user_id, {})
+    missing = [f for f in APPT_FIELDS if f not in already]
+    if not missing:
+        return  # all fields already collected
+
     prompt = (
-        "From the conversation below, extract appointment booking details if clearly mentioned.\n"
-        "Return a JSON object with only keys present: name, requirement, budget, datetime, contact.\n"
-        "Return ONLY valid JSON. No explanation. No markdown.\n\n"
+        "You are an appointment data extractor. Analyze the conversation and extract any of these fields that are CLEARLY mentioned by the user:\n"
+        "- name (client full name)\n"
+        "- requirement (project description)\n"
+        "- budget (approximate budget)\n"
+        "- datetime (preferred call date and time)\n"
+        "- contact (email or phone number)\n\n"
+        "Fields still needed: " + ", ".join(missing) + "\n\n"
+        "Rules:\n"
+        "- Only extract fields clearly stated by the user\n"
+        "- Do NOT invent or guess values\n"
+        "- Return ONLY a valid JSON object, no explanation, no markdown\n"
+        "- If nothing found, return {}\n\n"
         "Conversation:\n" + convo
     )
     try:
         res = ai_client.chat.completions.create(
             model="llama-3.2-3b-preview",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=256,
+            temperature=0.0,
+            max_tokens=300,
         )
         raw = res.choices[0].message.content.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
+        # Clean any markdown
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+        if not raw or raw == "{}":
+            return
         extracted: Dict = json.loads(raw)
+        # Validate — only accept known fields with non-empty string values
+        valid = {k: v for k, v in extracted.items() if k in APPT_FIELDS and isinstance(v, str) and v.strip()}
+        if not valid:
+            return
         if user_id not in appointments:
             appointments[user_id] = {}
-        appointments[user_id].update(extracted)
+        appointments[user_id].update(valid)
         if "booked_at" not in appointments[user_id]:
             appointments[user_id]["booked_at"] = get_ist_now().isoformat()
         _save(APPOINTMENTS_FILE, appointments)
-        if extracted:
-            logger.info("[%s] Appointment fields: %s", user_id, list(extracted.keys()))
+        logger.info("[%s] Extracted fields: %s | Total: %s", user_id, list(valid.keys()), list(appointments[user_id].keys()))
+    except json.JSONDecodeError as e:
+        logger.warning("[%s] JSON parse failed: %s | raw: %s", user_id, e, raw[:100])
     except Exception as e:
-        logger.debug("[%s] Appointment extraction skipped: %s", user_id, e)
+        logger.warning("[%s] Extraction error: %s", user_id, e)
 
 async def notify_mahesh(context: ContextTypes.DEFAULT_TYPE, user_id: str, username: str):
     if not MAHESH_NOTIFY_ID:
